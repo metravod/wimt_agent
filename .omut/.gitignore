@@ -1,0 +1,2 @@
+# Tool file: `omut zero` rewrites it. local/ is this copy's own memory (machine, servers, where secrets are kept) and never goes into git.
+/local/

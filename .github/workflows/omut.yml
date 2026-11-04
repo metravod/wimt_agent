@@ -1,0 +1,23 @@
+name: omut
+
+# Checks the project's meta in .omut/. Warnings fail too, so the badge in README.md
+# says whether the meta is fresh, not only well-formed. The weekly run catches what
+# goes stale with time alone, such as `verified` older than 30 days.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - run: go install github.com/metravod/omut/cmd/omut@latest
+      - run: omut check --fail-on warn

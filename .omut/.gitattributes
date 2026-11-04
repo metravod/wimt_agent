@@ -1,0 +1,2 @@
+# Tool file: `omut zero` rewrites it. Parallel branches each add log lines at the top; union keeps both sides' lines instead of a conflict.
+log.md merge=union
