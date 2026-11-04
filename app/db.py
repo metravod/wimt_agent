@@ -58,6 +58,11 @@ CREATE TABLE IF NOT EXISTS chat (             -- recent conversation, so the age
     content   TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS team_days_off (     -- days an admin declared off, on top of weekends and public holidays
+    day  TEXT PRIMARY KEY,
+    name TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS settings (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL

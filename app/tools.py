@@ -78,16 +78,53 @@ def _member(member_id: int) -> Member:
 # ── where people are ───────────────────────────────────────────────────
 
 @tool()
-def set_status(me: Member, status: Status, day: date | None = None, member_id: int | None = None) -> str:
-    """Set where someone works on a day (default: today). Leave member_id empty for yourself;
-    setting it for someone else is for admins. For vacation or sick leave spanning days, use request_absence."""
+async def set_status(me: Member, status: Status, day: date | None = None, member_id: int | None = None) -> str:
+    """Set where someone works on a day (default: today), only when the message says where they work THAT day:
+    "yesterday I was in the office" sets nothing. Leave member_id empty for yourself, also when
+    correcting your own status. Setting it for someone else is for admins, and only for a person they named:
+    the admin gets a confirmation button and nothing changes until they press it.
+    For vacation or sick leave spanning days, use request_absence."""
     who = _member(member_id) if member_id else me
     if who.id != me.id and not me.is_admin:
         raise Refused("only admins can set someone else's status")
     day = day or who.today()
-    db.run("INSERT INTO statuses (member_id, day, status) VALUES (?, ?, ?) "
-           "ON CONFLICT DO UPDATE SET status = excluded.status", who.id, day.isoformat(), status)
+    if who.id != me.id:
+        await bot.send(me.id, t("member_status_ask", name=who.name, status=t(status), day=day),
+                       bot.buttons([(t("confirm"), f"member:status:{who.id}:{day}:{status}"),
+                                    (t("cancel"), "member:cancel")]))
+        return f"NOT set yet: {me.name} got a button to confirm {who.name}: {status} on {day}."
+    _save_status(who.id, day.isoformat(), status)
     return f"{who.name}: {status} on {day}."
+
+
+def _save_status(member_id: int, day: str, status: str) -> None:
+    db.run("INSERT INTO statuses (member_id, day, status) VALUES (?, ?, ?) "
+           "ON CONFLICT DO UPDATE SET status = excluded.status", member_id, day, status)
+
+
+def confirmed_status(member_id: int, day: str, status: str) -> str:
+    """Set someone else's status; called by the confirmation button, never by the model."""
+    who = _member(member_id)
+    _save_status(who.id, day, status)
+    return t("member_status_set", name=who.name, status=t(status), day=day)
+
+
+@tool(admin=True)
+def set_team_day_off(me: Member, day: date, name: str) -> str:
+    """Make a day off for the whole team: nobody is asked or reminded of anything that day. Use it when an
+    admin asks to leave everyone alone ("stop pinging the team today") or says nobody works on a day.
+    name: why, in the admin's language."""
+    db.run("INSERT INTO team_days_off (day, name) VALUES (?, ?) "
+           "ON CONFLICT (day) DO UPDATE SET name = excluded.name", day.isoformat(), name)
+    return f"{day} is a day off for the whole team ({name}): no questions or reminders."
+
+
+@tool(admin=True)
+def cancel_team_day_off(me: Member, day: date) -> str:
+    """Undo set_team_day_off. Weekends and public holidays can't be undone."""
+    if not db.run("DELETE FROM team_days_off WHERE day = ?", day.isoformat()).rowcount:
+        raise Refused(f"{day} was not declared a day off")
+    return f"{day} is no longer a declared day off."
 
 
 @tool(reads=True)
@@ -159,20 +196,25 @@ def read_notes(me: Member, start: date, end: date) -> str:
 async def request_absence(me: Member, kind: Absence, start: date, end: date, reason: str | None = None,
                           member_id: int | None = None) -> str:
     """Request vacation, sick leave or a day off (dates inclusive). Leave member_id empty for yourself;
-    recording an absence for someone else is for admins. Admins' requests are approved at once,
-    members' requests go to the admins for approval."""
+    recording an absence for someone else is for admins, and only for a person they named: the admin gets
+    a confirmation button and nothing is recorded until they press it. Admins' own requests are approved
+    at once, members' requests go to the admins for approval."""
     who = _member(member_id) if member_id else me
     if who.id != me.id and not me.is_admin:
         raise Refused("only admins can request an absence for someone else")
     if end < start:
         raise Refused("the end date is before the start date")
+    if who.id != me.id:  # the reason doesn't fit in a button: the admin sees it, it isn't saved
+        await bot.send(me.id, t("member_absence_ask", name=who.name, kind=t(kind), start=start, end=end,
+                                reason=f"\n{reason}" if reason else ""),
+                       bot.buttons([(t("confirm"), f"member:absence:{who.id}:{kind}:{start}:{end}"),
+                                    (t("cancel"), "member:cancel")]))
+        return f"NOT recorded yet: {me.name} got a button to confirm {kind} for {who.name}, {start} – {end}."
     state = "approved" if me.is_admin else "pending"
     absence_id = db.run("INSERT INTO absences (member_id, kind, start_day, end_day, reason, state) "
                         "VALUES (?, ?, ?, ?, ?, ?)", who.id, kind, start.isoformat(), end.isoformat(),
                         reason, state).lastrowid
     if state == "approved":
-        if who.id != me.id:
-            await bot.send(who.id, t("absence_decided", kind=t(kind), start=start, end=end, state=t("approved")))
         return f"Absence #{absence_id} for {who.name} recorded and approved."
     text = t("absence_ask", name=me.name, kind=t(kind), start=start, end=end, reason=f"\n{reason}" if reason else "")
     markup = bot.buttons([(t("approve"), f"absence:{absence_id}:approved"),
@@ -204,6 +246,15 @@ def list_absences(me: Member, start: date, end: date) -> str:
         + (f" ({r['reason']})" if r["reason"] else "")
         for r in rows if r["state"] == "approved" or me.is_admin or r["member_id"] == me.id
     ) or "No absences in this period."
+
+
+async def confirmed_absence(member_id: int, kind: str, start: str, end: str) -> str:
+    """Record someone else's absence and tell them; called by the confirmation button, never by the model."""
+    who = _member(member_id)
+    db.run("INSERT INTO absences (member_id, kind, start_day, end_day, state) VALUES (?, ?, ?, ?, 'approved')",
+           who.id, kind, start, end)
+    await bot.send(who.id, t("absence_decided", kind=t(kind), start=start, end=end, state=t("approved")))
+    return t("member_absence_set", name=who.name, kind=t(kind), start=start, end=end)
 
 
 async def decide(absence_id: int, state: str) -> str:
@@ -257,8 +308,8 @@ def update_settings(me: Member, tz: str | None = None, country: str | None = Non
                if v is not None}
     if changes.get("country") == "" and len(changes) > 1:  # a filled-in blank, or holidays would silently go off
         raise Refused('country="" turns public holidays off: pass the ISO code, or leave country out')
-    if "tz" in changes and "country" not in changes and not team.setting("country"):  # holidays would stay off unseen
-        raise Refused("public holidays are off: pass the country's ISO code together with tz")
+    if "tz" in changes and "country" not in changes and changes["tz"] != team.setting("tz"):
+        raise Refused("a new tz needs its country: pass the ISO code too, or the holidays stay wrong unseen")
     for key, value in changes.items():  # validate everything before saving anything
         if key == "tz":
             _check_tz(value)

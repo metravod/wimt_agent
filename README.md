@@ -14,7 +14,7 @@ A Telegram assistant for a small team. Nobody has to learn commands: people just
 >
 > **Admin:** who's in the office today and who hasn't sent a standup?
 
-It also keeps the daily rhythm on its own: every morning it asks where everyone is working and asks for the standup, reminds the people who forgot, and sends a summary of all standups once everyone has reported. On Mondays it sends a review of the past week. It skips weekends, public holidays and people on vacation, and warns the team on the last working day before a holiday. You can send it voice messages, too.
+It also keeps the daily rhythm on its own: every morning it asks where everyone is working and asks for the standup, reminds the people who forgot, and sends a summary of all standups once everyone has reported. On the first working day of the week it sends a review of the past week. It skips weekends, public holidays, days an admin declares off and people on vacation, and warns the team on the last working day before a day off. You can send it voice messages, too.
 
 It talks in whatever language you write to it.
 
@@ -84,7 +84,7 @@ Safety model: the agent never decides *who* is talking. Every tool gets the send
 
 Run locally: `pip install -r requirements.txt`, then `BOT_TOKEN=... OPENAI_API_KEY=... python -m app`. Tests: `pip install pytest && python -m pytest`.
 
-Destructive actions don't depend on the model's judgement: removing a member only happens when an admin presses a confirmation button.
+What an admin does to other people doesn't depend on the model's judgement: removing a member and changing someone else's status or absence only happen when the admin presses a confirmation button.
 
 **Evals.** The model is not deterministic, so [`evals/cases.py`](evals/cases.py) lists what the agent must get right — everyday messages, questions, and attempts to do what one isn't allowed to — and checks the outcome in the database. Run them after changing prompts, tools or the model (costs a few cents): `OPENAI_API_KEY=... python -m evals`. When the agent gets something wrong in real life, add a case first, then fix it.
 

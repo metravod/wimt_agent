@@ -104,6 +104,8 @@ def day_off(day: date) -> str | None:
     """Why nobody works this day ("weekend" or a holiday name), or None for a workday."""
     if day.weekday() >= 5:
         return "weekend"
+    if declared := db.one("SELECT name FROM team_days_off WHERE day = ?", day.isoformat()):
+        return declared["name"]
     country = setting("country")
     return country_holidays(country, day.year).get(day) if country else None
 

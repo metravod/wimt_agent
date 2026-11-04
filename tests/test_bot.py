@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from app import agent, bot, db, llm, scheduler, team, tools
+from app import agent, bot, db, handlers, llm, scheduler, team, tools
 
 MONDAY = date(2026, 9, 28)
 
@@ -27,7 +27,7 @@ def setup(monkeypatch):
     return sent
 
 
-def call(who, name, **args):
+def call(who, name, /, **args):
     return asyncio.run(tools.call(team.member(who), name, json.dumps(args, default=str)))
 
 
@@ -50,7 +50,7 @@ def test_members_see_no_admin_tools_and_never_the_me_parameter():
 def test_a_member_cannot_use_admin_tools_or_act_for_others():
     assert call(2, "set_admin", member_id=2, is_admin=True).startswith("Error")
     assert call(2, "set_status", status="office", member_id=1).startswith("Error")
-    assert call(1, "set_status", status="office", member_id=2, day=MONDAY) == "Boris: office on 2026-09-28."
+    assert call(1, "set_status", status="office", member_id=1, day=MONDAY) == "Anna: office on 2026-09-28."
 
 
 def test_bad_arguments_go_back_to_the_model_as_errors():
@@ -179,14 +179,14 @@ def test_a_blank_country_cannot_slip_in_with_other_settings():
     assert team.setting("country") == ""
 
 
-def test_a_time_zone_needs_a_country_while_holidays_are_off():
-    team.set_setting("country", "")
-    tz = team.setting("tz")
-    assert call(1, "update_settings", tz="Europe/Lisbon").startswith("Error")
-    assert team.setting("tz") == tz
+def test_a_new_time_zone_needs_its_country():
+    for country in ("", "RU"):  # with holidays off, and with a country that may no longer be right
+        team.set_setting("country", country)
+        tz = team.setting("tz")
+        assert call(1, "update_settings", tz="Europe/Lisbon").startswith("Error")
+        assert (team.setting("tz"), team.setting("country")) == (tz, country)
     assert call(1, "update_settings", tz="Europe/Lisbon", country="PT").startswith("Changed only")
-    assert call(1, "update_settings", tz="Europe/Madrid").startswith("Changed only")  # a country is set: fine
-    assert team.setting("country") == "PT"
+    assert call(1, "update_settings", tz="Europe/Lisbon", status_time="08:00").startswith("Changed only")  # same tz
 
 
 def at(day, hour):
@@ -267,8 +267,62 @@ def test_only_a_button_removes_a_member(setup):
 
 def test_members_request_absences_only_for_themselves():
     assert call(2, "request_absence", kind="sick", start=MONDAY, end=MONDAY, member_id=1).startswith("Error")
-    assert "approved" in call(1, "request_absence", kind="sick", start=MONDAY, end=MONDAY, member_id=2)
+    assert "approved" in call(1, "request_absence", kind="sick", start=MONDAY, end=MONDAY)
+    assert team.away(1, MONDAY) == "sick"
+
+
+def press(who, data):
+    """Press an inline button; returns what the message was edited to."""
+    edited = []
+
+    async def edit_text(text):
+        edited.append(text)
+
+    async def answer(*args, **kwargs):
+        pass
+
+    query = SimpleNamespace(from_user=SimpleNamespace(id=who), data=data,
+                            message=SimpleNamespace(edit_text=edit_text), answer=answer)
+    asyncio.run(handlers.member_button(query))
+    return edited[0]
+
+
+def test_only_a_button_changes_someone_elses_status(setup):
+    assert call(1, "set_status", status="office", member_id=2, day=MONDAY).startswith("NOT set")
+    assert team.status(2, MONDAY) is None and setup[-1][0] == 1  # the admin got the button, Boris got nothing
+    assert "Boris" in press(1, f"member:status:2:{MONDAY}:office")
+    assert team.status(2, MONDAY) == "office"
+
+
+def test_only_a_button_records_someone_elses_absence(setup):
+    reply = call(1, "request_absence", kind="sick", start=MONDAY, end=MONDAY, member_id=2)
+    assert reply.startswith("NOT recorded") and team.away(2, MONDAY) is None and setup[-1][0] == 1
+    press(1, f"member:absence:2:sick:{MONDAY}:{MONDAY}")
     assert team.away(2, MONDAY) == "sick"
+    assert setup[-1][0] == 2  # now Boris is told
+
+
+def test_cancelling_or_a_member_pressing_changes_nothing(setup):
+    call(1, "set_status", status="office", member_id=2, day=MONDAY)
+    sent = len(setup)
+    press(1, "member:cancel")
+    press(2, f"member:status:1:{MONDAY}:office")
+    press(2, f"member:absence:1:sick:{MONDAY}:{MONDAY}")
+    assert team.status(2, MONDAY) is None and team.status(1, MONDAY) is None and len(setup) == sent
+
+
+def test_a_day_off_silences_the_whole_team_until_cancelled(setup, monkeypatch):
+    assert call(2, "set_team_day_off", day=MONDAY, name="off").startswith("Error")
+    call(1, "set_team_day_off", day=MONDAY, name="Team day")
+    assert team.day_off(MONDAY) == "Team day"
+    monkeypatch.setattr(team.Member, "now", lambda self: at(MONDAY, 10))
+    monkeypatch.setattr(team, "team_now", lambda: at(MONDAY, 13))
+    asyncio.run(scheduler.tick())
+    assert setup == []
+    assert team.holiday_ahead(MONDAY - timedelta(days=3))[1] == "Team day"  # Friday warns about it
+    call(1, "cancel_team_day_off", day=MONDAY)
+    assert team.day_off(MONDAY) is None
+    assert call(1, "cancel_team_day_off", day=MONDAY).startswith("Error")
 
 
 def test_schema_migrations_run_once_and_only_on_old_databases(tmp_path, monkeypatch):

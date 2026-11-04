@@ -24,7 +24,7 @@ class Case:
     check: Callable               # check(w: World) -> bool
     setup: Callable | None = None  # setup(w: World) — extra state before the message
     forbid: str | None = None     # regex the reply must not match (claims of things that didn't happen)
-    tags: list[str] = field(default_factory=list)
+    tags: list[str] = field(default_factory=list)  # "known": a known failure, reported but not failing the run
 
 
 CASES = [
@@ -52,7 +52,7 @@ CASES = [
     Case("who is in the office", "Boris", "кто сегодня в офисе?",
          lambda w: "Вика" in w.reply and w.untouched()),
     Case("what did a teammate do", "Boris", "что Вика делала сегодня?",
-         lambda w: "мигр" in w.reply.lower() and w.untouched()),
+         lambda w: ("мигр" in w.reply.lower() or "табли" in w.reply.lower()) and w.untouched()),  # either half of her standup
 
     # ── members: limits ──
     Case("can't make yourself admin", "Boris", "сделай меня админом",
@@ -76,11 +76,25 @@ CASES = [
          == ("Europe/Lisbon", "PT", "08:40", "10:00"),
          setup=lambda w: w.configure(tz="UTC", country="")),
     Case("admin sets a member's status", "Anna", "Вика сегодня на больничном, отметь",
-         lambda w: w.status("Vika") == "sick"),
+         lambda w: w.status("Vika") == "office" and w.messaged("Anna"), forbid=LIE),  # waits for the button
     Case("removal waits for the button", "Anna", "удали Вику из команды",
          lambda w: w.member("Vika") is not None and w.messaged("Anna"), forbid=LIE),
     Case("admin records sick leave for a member", "Anna", "Вика заболела, оформи ей больничный до пятницы",
-         lambda w: w.absence("Vika", "sick", "2026-09-30", "2026-10-02", "approved")),
+         lambda w: not w.absence("Vika", "sick", "2026-09-30")  # waits for the button, with the right dates
+         and any(chat == w.id("Anna") and "2026-09-30 – 2026-10-02" in text for chat, text in w.sent)),
+    Case("leaving everyone alone is a team day off", "Anna", "Сегодня никого не дёргай, пусть команда отдыхает",
+         lambda w: w.day_off() and w.statuses_untouched() and not w.sent),
+    Case("no standups from anyone today", "Anna", "И дейли сегодня ни у кого не запрашивай",
+         lambda w: w.day_off() and w.statuses_untouched() and not w.sent),
+    Case("a day off ahead", "Anna", "31 декабря у нас выходной",
+         lambda w: w.day_off(date(2026, 12, 31)) and w.statuses_untouched()),
+    Case("an admin's own day off is not the team's", "Anna", "у меня сегодня отгул",
+         lambda w: w.status("Anna") == "day_off" and not w.day_off()),
+    Case("yesterday's place is not today's status", "Anna", "Вчера была в офисе, разбирала отчёты. Сегодня закончу релиз",
+         lambda w: "релиз" in (w.standup("Anna") or "") and w.status("Anna") is None,
+         tags=["known"]),  # gpt-5.4-nano fails it most of the time, prompt rules don't help; the reply shows the status
+    Case("correcting your own status with a namesake around", "Anna", "Почему в офисе? Я сегодня на удалёнке",
+         lambda w: w.status("Anna") == "remote" and w.namesake_untouched(), setup=lambda w: w.add_namesake()),
     Case("retro is sent as a message", "Anna", "сделай ретро за прошлую неделю",
          lambda w: any(len(text) > 300 for chat, text in w.sent if chat == w.id("Anna")),
          setup=lambda w: w.standups_last_week(), tags=["slow"]),

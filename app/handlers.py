@@ -67,7 +67,7 @@ async def status_button(query: CallbackQuery) -> None:
     me = team.member(query.from_user.id)
     status = query.data.removeprefix("status:")
     if me and status in team.STATUSES:
-        tools.set_status(me, status)
+        await tools.set_status(me, status)
         await query.message.edit_text(t("status_set", status=t(status)))
     await query.answer()
 
@@ -85,6 +85,24 @@ async def absence_button(query: CallbackQuery) -> None:
         await query.answer()
     except tools.Refused as e:  # e.g. another admin already decided
         await query.answer(str(e), show_alert=True)
+
+
+@router.callback_query(F.data.startswith("member:"))
+async def member_button(query: CallbackQuery) -> None:
+    """The only way to change someone else's status or absence: the agent can ask, a person has to press."""
+    me = team.member(query.from_user.id)
+    action, *args = query.data.removeprefix("member:").split(":")
+    text = t("cancelled")
+    if me and me.is_admin:
+        try:
+            if action == "status" and args[2] in team.STATUSES:
+                text = tools.confirmed_status(int(args[0]), args[1], args[2])
+            elif action == "absence" and args[1] in team.ABSENCES:
+                text = await tools.confirmed_absence(int(args[0]), args[1], args[2], args[3])
+        except tools.Refused as e:  # the member was removed meanwhile
+            text = str(e)
+    await query.message.edit_text(text)
+    await query.answer()
 
 
 @router.callback_query(F.data.startswith("remove:"))
